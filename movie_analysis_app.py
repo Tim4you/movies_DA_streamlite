@@ -133,6 +133,7 @@ def main():
         "🎭 Genre Analysis",
         "🌍 Geographic Analysis",
         "💰 Financial Analysis",
+        "🤝 Collaboration Performance",  # Add this new page
         "🔍 Advanced Analytics"
     ]
     
@@ -154,6 +155,8 @@ def main():
         geographic_analysis_page(data)
     elif selected_page == "💰 Financial Analysis":
         financial_analysis_page(data, movies_merged)
+    elif selected_page == "🤝 Collaboration Performance":  # Add this route
+        collaboration_analysis_page(data, movies_merged)
     elif selected_page == "🔍 Advanced Analytics":
         advanced_analytics_page(data, movies_merged)
 
@@ -610,6 +613,249 @@ def advanced_analytics_page(data, movies_merged):
                     fig = px.box(movies_merged, y=selected_metric,
                                title=f'{selected_metric.replace("_", " ").title()} Box Plot')
                     st.plotly_chart(fig, use_container_width=True)
+
+def collaboration_analysis_page(data, movies_merged):
+    st.markdown('<h2 class="section-header">🤝 Collaboration Performance Analysis</h2>', unsafe_allow_html=True)
+    
+    # Data preprocessing for collaboration analysis
+    movies_df = data['movies'].copy()
+    crew_df = data['crew'].copy()
+    cast_df = data['cast'].copy()
+    
+    # Clean financial data if not already done
+    for col in ['budget', 'revenue']:
+        if col in movies_df.columns:
+            movies_df[col] = movies_df[col].astype(str).str.replace(',', '')
+            movies_df[col] = pd.to_numeric(movies_df[col], errors='coerce')
+    
+    # Calculate ROI
+    movies_df['roi'] = ((movies_df['revenue'] - movies_df['budget']) / movies_df['budget'] * 100).round(2)
+    
+    # Filter out movies with missing financial data
+    movies_financial = movies_df.dropna(subset=['budget', 'revenue', 'vote_average'])
+    movies_financial = movies_financial[(movies_financial['budget'] > 0) & (movies_financial['revenue'] > 0)]
+    
+    if len(movies_financial) == 0:
+        st.warning("No financial data available for collaboration analysis.")
+        return
+    
+    st.markdown("### 📊 Collaboration Performance Metrics")
+    
+    tab1, tab2, tab3 = st.tabs(["🎬 Director + Producer", "👥 Director + Top 3 Actors", "🎭 Top 3 Actors"])
+    
+    with tab1:
+        st.markdown("#### Director + Producer Collaborations")
+        
+        # Filter crew for directors and producers
+        crew_filtered = crew_df[crew_df['role'].isin(['Director', 'Producer'])]
+        
+        # Pivot crew to have director and producer columns
+        crew_pivot = crew_filtered.pivot_table(
+            index='movie_id', 
+            columns='role', 
+            values='crew_name', 
+            aggfunc=lambda x: ', '.join(x)
+        )
+        
+        # Merge with movies
+        movies_crew_merged = movies_financial.merge(crew_pivot, left_on='movie_id', right_index=True, how='inner')
+        
+        # Drop rows with missing director or producer data
+        movies_crew_merged = movies_crew_merged.dropna(subset=['Director', 'Producer'])
+        
+        if len(movies_crew_merged) > 0:
+            # Group by Director + Producer
+            dp_group = movies_crew_merged.groupby(['Director', 'Producer']).agg(
+                avg_roi=('roi', 'mean'),
+                avg_revenue=('revenue', 'mean'),
+                avg_vote_average=('vote_average', 'mean'),
+                movie_count=('movie_id', 'count')
+            ).reset_index()
+            
+            # Filter collaborations with more than 1 movie for better reliability
+            dp_group_filtered = dp_group[dp_group['movie_count'] >= 1]
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**🏆 Top 10 by ROI**")
+                if len(dp_group_filtered) > 0:
+                    top_roi = dp_group_filtered.nlargest(10, 'avg_roi')[
+                        ['Director', 'Producer', 'avg_roi', 'movie_count']
+                    ].round(2)
+                    top_roi['avg_roi'] = top_roi['avg_roi'].apply(lambda x: f"{x:.1f}%")
+                    st.dataframe(top_roi, use_container_width=True)
+                else:
+                    st.info("No collaboration data available")
+            
+            with col2:
+                st.markdown("**💰 Top 10 by Revenue**")
+                if len(dp_group_filtered) > 0:
+                    top_revenue = dp_group_filtered.nlargest(10, 'avg_revenue')[
+                        ['Director', 'Producer', 'avg_revenue', 'movie_count']
+                    ]
+                    top_revenue['avg_revenue'] = top_revenue['avg_revenue'].apply(lambda x: f"${x:,.0f}")
+                    st.dataframe(top_revenue, use_container_width=True)
+            
+            with col3:
+                st.markdown("**⭐ Top 10 by Rating**")
+                if len(dp_group_filtered) > 0:
+                    top_rating = dp_group_filtered.nlargest(10, 'avg_vote_average')[
+                        ['Director', 'Producer', 'avg_vote_average', 'movie_count']
+                    ].round(2)
+                    st.dataframe(top_rating, use_container_width=True)
+        else:
+            st.warning("No Director + Producer collaboration data available.")
+    
+    with tab2:
+        st.markdown("#### Director + Top 3 Actors Collaborations")
+        
+        # Get top 3 actors per movie by order
+        cast_top3 = cast_df[cast_df['order'] < 3]
+        
+        # Aggregate actors per movie
+        actors_agg = cast_top3.groupby('movie_id')['cast_name'].apply(lambda x: ', '.join(x)).reset_index()
+        
+        # Get directors only
+        directors_only = crew_df[crew_df['role'] == 'Director']
+        directors_agg = directors_only.groupby('movie_id')['crew_name'].apply(lambda x: ', '.join(x)).reset_index()
+        directors_agg.columns = ['movie_id', 'Director']
+        
+        # Merge with movies and cast
+        movies_cast_merged = movies_financial.merge(actors_agg, on='movie_id', how='inner')
+        movies_cast_merged = movies_cast_merged.merge(directors_agg, on='movie_id', how='inner')
+        
+        # Drop missing data
+        movies_cast_merged = movies_cast_merged.dropna(subset=['Director', 'cast_name'])
+        
+        if len(movies_cast_merged) > 0:
+            # Group by Director + 3 actors
+            dc_group = movies_cast_merged.groupby(['Director', 'cast_name']).agg(
+                avg_roi=('roi', 'mean'),
+                avg_revenue=('revenue', 'mean'),
+                avg_vote_average=('vote_average', 'mean'),
+                movie_count=('movie_id', 'count')
+            ).reset_index()
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**🏆 Top 10 by ROI**")
+                if len(dc_group) > 0:
+                    top_roi = dc_group.nlargest(10, 'avg_roi')[
+                        ['Director', 'cast_name', 'avg_roi', 'movie_count']
+                    ].round(2)
+                    top_roi['avg_roi'] = top_roi['avg_roi'].apply(lambda x: f"{x:.1f}%")
+                    top_roi.columns = ['Director', 'Top 3 Actors', 'Avg ROI', 'Movies']
+                    st.dataframe(top_roi, use_container_width=True)
+            
+            with col2:
+                st.markdown("**💰 Top 10 by Revenue**")
+                if len(dc_group) > 0:
+                    top_revenue = dc_group.nlargest(10, 'avg_revenue')[
+                        ['Director', 'cast_name', 'avg_revenue', 'movie_count']
+                    ]
+                    top_revenue['avg_revenue'] = top_revenue['avg_revenue'].apply(lambda x: f"${x:,.0f}")
+                    top_revenue.columns = ['Director', 'Top 3 Actors', 'Avg Revenue', 'Movies']
+                    st.dataframe(top_revenue, use_container_width=True)
+            
+            with col3:
+                st.markdown("**⭐ Top 10 by Rating**")
+                if len(dc_group) > 0:
+                    top_rating = dc_group.nlargest(10, 'avg_vote_average')[
+                        ['Director', 'cast_name', 'avg_vote_average', 'movie_count']
+                    ].round(2)
+                    top_rating.columns = ['Director', 'Top 3 Actors', 'Avg Rating', 'Movies']
+                    st.dataframe(top_rating, use_container_width=True)
+        else:
+            st.warning("No Director + Actors collaboration data available.")
+    
+    with tab3:
+        st.markdown("#### Top 3 Actors Collaborations")
+        
+        # Use the same actors aggregation from tab2
+        cast_top3 = cast_df[cast_df['order'] < 3]
+        actors_agg = cast_top3.groupby('movie_id')['cast_name'].apply(lambda x: ', '.join(x)).reset_index()
+        
+        # Merge with movies
+        movies_actors_merged = movies_financial.merge(actors_agg, on='movie_id', how='inner')
+        movies_actors_merged = movies_actors_merged.dropna(subset=['cast_name'])
+        
+        if len(movies_actors_merged) > 0:
+            # Group by cast_name (top 3 actors)
+            actors_group = movies_actors_merged.groupby('cast_name').agg(
+                avg_roi=('roi', 'mean'),
+                avg_revenue=('revenue', 'mean'),
+                avg_vote_average=('vote_average', 'mean'),
+                movie_count=('movie_id', 'count')
+            ).reset_index()
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**🏆 Top 10 by ROI**")
+                if len(actors_group) > 0:
+                    top_roi = actors_group.nlargest(10, 'avg_roi')[
+                        ['cast_name', 'avg_roi', 'movie_count']
+                    ].round(2)
+                    top_roi['avg_roi'] = top_roi['avg_roi'].apply(lambda x: f"{x:.1f}%")
+                    top_roi.columns = ['Top 3 Actors', 'Avg ROI', 'Movies']
+                    st.dataframe(top_roi, use_container_width=True)
+            
+            with col2:
+                st.markdown("**💰 Top 10 by Revenue**")
+                if len(actors_group) > 0:
+                    top_revenue = actors_group.nlargest(10, 'avg_revenue')[
+                        ['cast_name', 'avg_revenue', 'movie_count']
+                    ]
+                    top_revenue['avg_revenue'] = top_revenue['avg_revenue'].apply(lambda x: f"${x:,.0f}")
+                    top_revenue.columns = ['Top 3 Actors', 'Avg Revenue', 'Movies']
+                    st.dataframe(top_revenue, use_container_width=True)
+            
+            with col3:
+                st.markdown("**⭐ Top 10 by Rating**")
+                if len(actors_group) > 0:
+                    top_rating = actors_group.nlargest(10, 'avg_vote_average')[
+                        ['cast_name', 'avg_vote_average', 'movie_count']
+                    ].round(2)
+                    top_rating.columns = ['Top 3 Actors', 'Avg Rating', 'Movies']
+                    st.dataframe(top_rating, use_container_width=True)
+        else:
+            st.warning("No actors collaboration data available.")
+    
+    # Collaboration insights
+    st.markdown("### 💡 Collaboration Insights")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 🎯 Key Performance Indicators")
+        
+        # Calculate some aggregate statistics
+        if len(movies_financial) > 0:
+            avg_roi = movies_financial['roi'].mean()
+            avg_revenue = movies_financial['revenue'].mean()
+            avg_rating = movies_financial['vote_average'].mean()
+            
+            st.metric("Industry Average ROI", f"{avg_roi:.1f}%")
+            st.metric("Industry Average Revenue", f"${avg_revenue:,.0f}")
+            st.metric("Industry Average Rating", f"{avg_rating:.1f}")
+    
+    with col2:
+        st.markdown("#### 📈 Collaboration Performance Chart")
+        
+        # Create a simple visualization showing ROI distribution
+        if len(movies_financial) > 0:
+            fig = px.histogram(
+                movies_financial, 
+                x='roi', 
+                nbins=30,
+                title='ROI Distribution Across All Movies',
+                labels={'roi': 'Return on Investment (%)', 'count': 'Number of Movies'}
+            )
+            fig.add_vline(x=movies_financial['roi'].mean(), line_dash="dash", 
+                         annotation_text=f"Average: {movies_financial['roi'].mean():.1f}%")
+            st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
     main()
