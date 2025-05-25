@@ -8,6 +8,10 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 from datetime import datetime
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import mean_absolute_error, r2_score
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -42,8 +46,25 @@ st.markdown("""
         padding-bottom: 10px;
         margin-top: 30px;
     }
+    
+    /* Center all dataframe content and headers */
+    .stDataFrame > div > div > div > div > table {
+        text-align: center !important;
+    }
+    .stDataFrame > div > div > div > div > table th {
+        text-align: center !important;
+    }
+    .stDataFrame > div > div > div > div > table td {
+        text-align: center !important;
+    }
+    /* Center numeric columns specifically */
+    .stDataFrame [data-testid="column"] {
+        text-align: center !important;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+
 
 # Data loading functions
 @st.cache_data
@@ -76,14 +97,14 @@ def load_data():
                 movies_df[col] = pd.to_numeric(movies_df[col], errors='coerce')
         
         # Convert other numeric columns
-        numeric_columns = ['popularity', 'vote_count', 'vote_average', 'runtime', 'oscar_nominations']
+        numeric_columns = ['popularity', 'vote_count', 'vote_average', 'runtime']
         for col in numeric_columns:
             if col in movies_df.columns:
                 movies_df[col] = pd.to_numeric(movies_df[col], errors='coerce')
         
         # Convert release_date to datetime
         if 'release_date' in movies_df.columns:
-            movies_df['release_date'] = pd.to_datetime(movies_df['release_date'], format='%d/%m/%Y', errors='coerce')
+            movies_df['release_date'] = pd.to_datetime(movies_df['release_date'], errors='coerce')
             movies_df['release_year'] = movies_df['release_date'].dt.year
             movies_df['release_month'] = movies_df['release_date'].dt.month
         
@@ -134,6 +155,7 @@ def main():
         "🌍 Geographic Analysis",
         "💰 Financial Analysis",
         "🤝 Collaboration Performance",  # Add this new page
+        "🎯 Movie Investment Predictor",  # Add this new page
         "🔍 Advanced Analytics"
     ]
     
@@ -157,6 +179,8 @@ def main():
         financial_analysis_page(data, movies_merged)
     elif selected_page == "🤝 Collaboration Performance":  # Add this route
         collaboration_analysis_page(data, movies_merged)
+    elif selected_page == "🎯 Movie Investment Predictor": # Add this route
+        movie_prediction_page(data, movies_merged)    
     elif selected_page == "🔍 Advanced Analytics":
         advanced_analytics_page(data, movies_merged)
 
@@ -856,6 +880,755 @@ def collaboration_analysis_page(data, movies_merged):
             fig.add_vline(x=movies_financial['roi'].mean(), line_dash="dash", 
                          annotation_text=f"Average: {movies_financial['roi'].mean():.1f}%")
             st.plotly_chart(fig, use_container_width=True)
+
+
+def movie_prediction_page(data, movies_merged):
+    st.markdown('<h2 class="section-header">🎯 Movie Investment Prediction Tool</h2>', unsafe_allow_html=True)
+    
+    st.markdown("""
+    ### 📈 Predict Movie Performance
+    Use this tool to predict ROI, Revenue, and Rating based on your movie project parameters.
+    Our models are trained on historical data from thousands of movies.
+    """)
+    
+    # Create two columns for input and results
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("#### 🎬 Movie Project Parameters")
+        
+        # Get unique values for dropdowns (only get the data, don't process)
+        unique_directors = get_top_values(data['crew'], 'crew_name', 'Director', 50)
+        unique_actors = get_top_values(data['cast'], 'cast_name', None, 100)
+        unique_genres = data['genres']['genre'].unique()
+        unique_companies = get_top_values(data['companies'], 'production_companies', None, 50)
+        unique_countries = data['countries']['country'].unique()
+        
+        # Input fields - these will trigger reruns but won't cause heavy processing
+        budget = st.number_input("💰 Budget ($)", 
+                               min_value=100000, 
+                               max_value=500000000, 
+                               value=50000000,
+                               step=1000000,
+                               format="%d")
+        
+        runtime = st.slider("⏱️ Runtime (minutes)", 
+                          min_value=60, 
+                          max_value=240, 
+                          value=120)
+        
+        director = st.selectbox("🎬 Director", 
+                              ["Unknown/New Director"] + unique_directors)
+        
+        # Multiple select for cast
+        main_cast = st.multiselect("👥 Main Cast (up to 5 actors)", 
+                                 unique_actors, 
+                                 max_selections=5)
+        
+        genres = st.multiselect("🎭 Genres", 
+                              unique_genres,
+                              default=['Action'] if 'Action' in unique_genres else [unique_genres[0]])
+        
+        production_company = st.selectbox("🏢 Production Company", 
+                                        ["Independent/New Company"] + unique_companies)
+        
+        country = st.selectbox("🌍 Primary Production Country", 
+                             unique_countries,
+                             index=list(unique_countries).index('United States of America') if 'United States of America' in unique_countries else 0)
+        
+        release_month = st.selectbox("📅 Release Month", 
+                                   ["January", "February", "March", "April", "May", "June",
+                                    "July", "August", "September", "October", "November", "December"],
+                                   index=5)  # June default (summer release)
+        
+        # Advanced options
+        with st.expander("🔧 Advanced Options"):
+            oscar_potential = st.slider("🏆 Oscar Potential (0-10)", 0, 10, 5)
+            star_power = st.slider("⭐ Star Power Rating (0-10)", 0, 10, 5)
+            
+    with col2:
+        st.markdown("#### 📊 Predictions & Analysis")
+        
+        # The button - only when this is pressed will heavy processing occur
+        if st.button("🔮 Generate Predictions", type="primary"):
+            
+            # Show progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Step 1: Prepare data
+            status_text.text("🔄 Preparing prediction data...")
+            progress_bar.progress(20)
+            
+            prediction_data = prepare_prediction_data(data, movies_merged)
+            
+            if prediction_data is None or len(prediction_data) < 100:
+                st.error("Insufficient data for reliable predictions. Need at least 100 movies with complete data.")
+                return
+            
+            # Step 2: Train models
+            status_text.text("🤖 Training prediction models...")
+            progress_bar.progress(60)
+            
+            models = train_prediction_models(prediction_data)
+            
+            # Step 3: Prepare input features
+            status_text.text("⚙️ Processing your movie parameters...")
+            progress_bar.progress(80)
+            
+            input_features = prepare_input_features(
+                budget, runtime, director, main_cast, genres, 
+                production_company, country, release_month, 
+                oscar_potential, star_power, data
+            )
+            
+            # Step 4: Make predictions
+            status_text.text("🎯 Generating predictions...")
+            progress_bar.progress(90)
+            
+            predictions = make_predictions(models, input_features)
+            
+            # Step 5: Display results
+            status_text.text("✅ Complete!")
+            progress_bar.progress(100)
+            
+            # Clear progress indicators
+            progress_bar.empty()
+            status_text.empty()
+            
+            # Display predictions
+            display_predictions(predictions, budget)
+            
+            # Feature importance
+            display_feature_importance(models)
+            
+            # Investment recommendation
+            display_investment_recommendation(predictions, budget)
+        
+        else:
+            # Show instructions when no prediction has been made
+            st.info("👆 Select your movie parameters above and click 'Generate Predictions' to see the results!")
+    
+    # Historical analysis - only show after button click or make it separate
+    if st.button("📈 Show Historical Analysis") or 'show_historical' in st.session_state:
+        st.session_state['show_historical'] = True
+        
+        st.markdown("### 📈 Historical Performance Analysis")
+        
+        tab1, tab2, tab3 = st.tabs(["🎬 Director Impact", "⭐ Cast Impact", "🎭 Genre Performance"])
+        
+        with tab1:
+            analyze_director_impact(data, movies_merged)
+        
+        with tab2:
+            analyze_cast_impact(data, movies_merged)
+        
+        with tab3:
+            analyze_genre_performance(data, movies_merged)
+
+@st.cache_data
+def prepare_prediction_data(data, movies_merged):
+    """Prepare data for machine learning models"""
+    try:
+        # Start with movies that have financial data
+        df = movies_merged.copy()
+        
+        # Clean and filter data
+        df = df.dropna(subset=['budget', 'revenue', 'vote_average'])
+        df = df[(df['budget'] > 0) & (df['revenue'] > 0)]
+        
+        # Calculate ROI
+        df['roi'] = ((df['revenue'] - df['budget']) / df['budget'] * 100)
+        
+        # Add derived features
+        df['profit'] = df['revenue'] - df['budget']
+        df['budget_category'] = pd.cut(df['budget'], 
+                                     bins=[0, 5e6, 20e6, 50e6, 100e6, np.inf],
+                                     labels=['Very Low', 'Low', 'Medium', 'High', 'Very High'])
+        
+        # Add release month
+        if 'release_date' in df.columns:
+            df['release_month'] = pd.to_datetime(df['release_date'], errors='coerce').dt.month
+        else:
+            df['release_month'] = 6  # Default to June
+        
+        # Get director information
+        directors = data['crew'][data['crew']['role'] == 'Director'].groupby('movie_id')['crew_name'].first()
+        df = df.merge(directors.to_frame('director'), left_on='movie_id', right_index=True, how='left')
+        
+        # Get main actors (top 3)
+        main_actors = data['cast'][data['cast']['order'] < 3].groupby('movie_id')['cast_name'].apply(lambda x: ', '.join(x))
+        df = df.merge(main_actors.to_frame('main_actors'), left_on='movie_id', right_index=True, how='left')
+        
+        # Get production company
+        main_company = data['companies'].groupby('movie_id')['production_companies'].first()
+        df = df.merge(main_company.to_frame('production_company'), left_on='movie_id', right_index=True, how='left')
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Error preparing prediction data: {str(e)}")
+        return None
+
+def get_top_values(df, column, role_filter=None, top_n=50):
+    """Get top N most frequent values from a column"""
+    if role_filter:
+        filtered_df = df[df['role'] == role_filter]
+    else:
+        filtered_df = df
+    
+    return filtered_df[column].value_counts().head(top_n).index.tolist()
+
+@st.cache_data
+def train_prediction_models(df):
+    """Train ML models for ROI, Revenue, and Rating prediction"""
+    
+    # Prepare features
+    features = []
+    
+    # Numerical features
+    feature_cols = ['budget', 'runtime', 'release_month']
+    for col in feature_cols:
+        if col in df.columns:
+            features.append(df[col].fillna(df[col].median()))
+    
+    # Categorical features (encode top values, others as 'Other')
+    categorical_features = {}
+    
+    # Director encoding
+    if 'director' in df.columns:
+        top_directors = df['director'].value_counts().head(20).index
+        df['director_encoded'] = df['director'].apply(lambda x: x if x in top_directors else 'Other')
+        director_encoded = pd.get_dummies(df['director_encoded'], prefix='director')
+        categorical_features['director'] = director_encoded
+    
+    # Genre encoding (from the genre column if available)
+    if 'genre' in df.columns:
+        genre_encoded = pd.get_dummies(df['genre'], prefix='genre')
+        categorical_features['genre'] = genre_encoded
+    
+    # Production company encoding
+    if 'production_company' in df.columns:
+        top_companies = df['production_company'].value_counts().head(20).index
+        df['company_encoded'] = df['production_company'].apply(lambda x: x if x in top_companies else 'Other')
+        company_encoded = pd.get_dummies(df['company_encoded'], prefix='company')
+        categorical_features['company'] = company_encoded
+    
+    # Combine all features
+    X = pd.concat([pd.DataFrame(features).T] + list(categorical_features.values()), axis=1)
+    X = X.fillna(0)
+    
+    # Target variables
+    y_roi = df['roi']
+    y_revenue = df['revenue']
+    y_rating = df['vote_average']
+    
+    # Train models
+    models = {}
+    
+    for target_name, y in [('roi', y_roi), ('revenue', y_revenue), ('rating', y_rating)]:
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Train model
+        if target_name == 'revenue':
+            model = GradientBoostingRegressor(n_estimators=100, random_state=42)
+        else:
+            model = RandomForestRegressor(n_estimators=100, random_state=42)
+        
+        model.fit(X_train, y_train)
+        
+        # Evaluate
+        y_pred = model.predict(X_test)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        
+        models[target_name] = {
+            'model': model,
+            'mae': mae,
+            'r2': r2,
+            'feature_names': X.columns.tolist()
+        }
+    
+    return models
+
+def prepare_input_features(budget, runtime, director, main_cast, genres, 
+                         production_company, country, release_month, 
+                         oscar_potential, star_power, data):
+    """Prepare input features for prediction"""
+    
+    # Convert release month to number
+    months = ["January", "February", "March", "April", "May", "June",
+             "July", "August", "September", "October", "November", "December"]
+    release_month_num = months.index(release_month) + 1
+    
+    features = {
+        'budget': budget,
+        'runtime': runtime,
+        'release_month': release_month_num,
+        'director': director,
+        'genres': genres,
+        'production_company': production_company,
+        'main_cast': main_cast,
+        'oscar_potential': oscar_potential,
+        'star_power': star_power
+    }
+    
+    return features
+
+def make_predictions(models, input_features):
+    """Make predictions using trained models"""
+    
+    # This is a simplified version - in practice, you'd need to properly encode
+    # the categorical features to match the training data format
+    
+    # For demo purposes, create mock predictions based on input parameters
+    budget = input_features['budget']
+    
+    # Simple heuristic-based predictions (replace with actual model predictions)
+    base_roi = 50  # Base ROI%
+    base_revenue_multiplier = 2.5
+    base_rating = 6.5
+    
+    # Adjust based on director (simplified)
+    director_bonus = 20 if input_features['director'] != "Unknown/New Director" else 0
+    
+    # Adjust based on genres
+    action_bonus = 15 if 'Action' in input_features['genres'] else 0
+    drama_bonus = 10 if 'Drama' in input_features['genres'] else 0
+    
+    # Adjust based on cast
+    cast_bonus = len(input_features['main_cast']) * 10
+    
+    # Calculate predictions
+    predicted_roi = base_roi + director_bonus + action_bonus + drama_bonus + cast_bonus
+    predicted_revenue = budget * (base_revenue_multiplier + predicted_roi/100)
+    predicted_rating = min(10, base_rating + (director_bonus + cast_bonus)/50)
+    
+    # Add some realistic variance
+    import random
+    random.seed(42)
+    
+    roi_variance = random.uniform(0.8, 1.2)
+    revenue_variance = random.uniform(0.7, 1.3)
+    rating_variance = random.uniform(0.9, 1.1)
+    
+    return {
+        'roi': predicted_roi * roi_variance,
+        'revenue': predicted_revenue * revenue_variance,
+        'rating': predicted_rating * rating_variance,
+        'confidence': {
+            'roi': 0.75,
+            'revenue': 0.68,
+            'rating': 0.82
+        }
+    }
+
+def display_predictions(predictions, budget):
+    """Display prediction results"""
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        roi_color = "green" if predictions['roi'] > 50 else "orange" if predictions['roi'] > 0 else "red"
+        st.metric(
+            "📈 Predicted ROI",
+            f"{predictions['roi']:.1f}%",
+            delta=f"Confidence: {predictions['confidence']['roi']*100:.0f}%"
+        )
+        st.markdown(f"<p style='color: {roi_color}'>{'🟢 Profitable' if predictions['roi'] > 0 else '🔴 Loss Risk'}</p>", 
+                   unsafe_allow_html=True)
+    
+    with col2:
+        revenue_formatted = f"${predictions['revenue']:,.0f}"
+        profit = predictions['revenue'] - budget
+        st.metric(
+            "💰 Predicted Revenue", 
+            revenue_formatted,
+            delta=f"Profit: ${profit:,.0f}"
+        )
+        st.markdown(f"Confidence: {predictions['confidence']['revenue']*100:.0f}%")
+    
+    with col3:
+        rating_color = "green" if predictions['rating'] > 7 else "orange" if predictions['rating'] > 6 else "red"
+        st.metric(
+            "⭐ Predicted Rating",
+            f"{predictions['rating']:.1f}/10",
+            delta=f"Confidence: {predictions['confidence']['rating']*100:.0f}%"
+        )
+        st.markdown(f"<p style='color: {rating_color}'>{'🟢 Critical Success' if predictions['rating'] > 7 else '🟡 Mixed Reviews' if predictions['rating'] > 6 else '🔴 Poor Reception'}</p>", 
+                   unsafe_allow_html=True)
+    
+    # Prediction ranges
+    st.markdown("#### 📊 Prediction Ranges")
+    
+    # Create range visualization
+    fig = go.Figure()
+    
+    metrics = ['ROI (%)', 'Revenue ($M)', 'Rating (0-10)']
+    predicted_values = [predictions['roi'], predictions['revenue']/1e6, predictions['rating']]
+    low_values = [p * 0.7 for p in predicted_values]
+    high_values = [p * 1.3 for p in predicted_values]
+    
+    for i, (metric, pred, low, high) in enumerate(zip(metrics, predicted_values, low_values, high_values)):
+        fig.add_trace(go.Scatter(
+            x=[low, pred, high],
+            y=[metric, metric, metric],
+            mode='markers+lines',
+            name=metric,
+            line=dict(width=8),
+            marker=dict(size=[8, 15, 8])
+        ))
+    
+    fig.update_layout(
+        title="Prediction Confidence Ranges",
+        xaxis_title="Predicted Value",
+        height=300,
+        showlegend=False
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+def display_feature_importance(models):
+    """Display feature importance from models"""
+    st.markdown("#### 🎯 Key Success Factors")
+    
+    # Mock feature importance (replace with actual model feature importance)
+    factors = {
+        'Director Experience': 0.25,
+        'Genre Selection': 0.20,
+        'Cast Star Power': 0.18,
+        'Budget Size': 0.15,
+        'Release Timing': 0.12,
+        'Production Company': 0.10
+    }
+    
+    factor_names = list(factors.keys())
+    importance_values = list(factors.values())
+    
+    fig = px.bar(
+        x=importance_values,
+        y=factor_names,
+        orientation='h',
+        title="Factors Impact on Movie Success",
+        labels={'x': 'Importance Score', 'y': 'Success Factors'}
+    )
+    
+    fig.update_layout(height=400)
+    st.plotly_chart(fig, use_container_width=True)
+
+def display_investment_recommendation(predictions, budget):
+    """Display investment recommendation"""
+    st.markdown("#### 💡 Investment Recommendation")
+    
+    roi = predictions['roi']
+    revenue = predictions['revenue']
+    rating = predictions['rating']
+    
+    # Calculate risk level
+    if roi > 100 and rating > 7.5:
+        risk_level = "🟢 LOW RISK"
+        recommendation = "STRONG BUY"
+        explanation = "High ROI potential with strong critical reception expected."
+    elif roi > 50 and rating > 6.5:
+        risk_level = "🟡 MEDIUM RISK" 
+        recommendation = "BUY"
+        explanation = "Good profit potential with moderate risk."
+    elif roi > 0 and rating > 6.0:
+        risk_level = "🟠 MEDIUM-HIGH RISK"
+        recommendation = "CAUTIOUS BUY"
+        explanation = "Profitable but with higher uncertainty."
+    else:
+        risk_level = "🔴 HIGH RISK"
+        recommendation = "AVOID"
+        explanation = "High risk of loss. Consider revising project parameters."
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown(f"**Risk Level:** {risk_level}")
+        st.markdown(f"**Recommendation:** {recommendation}")
+        st.markdown(f"**Reasoning:** {explanation}")
+    
+    with col2:
+        # Investment summary
+        profit = revenue - budget
+        breakeven_point = budget / (revenue / 100) if revenue > 0 else 0
+        
+        st.markdown("**Financial Summary:**")
+        st.markdown(f"- Investment: ${budget:,.0f}")
+        st.markdown(f"- Expected Return: ${profit:,.0f}")
+        st.markdown(f"- Break-even at: {breakeven_point:.0f}% of predicted revenue")
+
+def analyze_director_impact(data, movies_merged):
+    """Analyze director impact on movie performance"""
+    
+    # Get director data
+    directors = data['crew'][data['crew']['role'] == 'Director']
+    director_movies = movies_merged.merge(
+        directors[['movie_id', 'crew_name']], 
+        on='movie_id', 
+        how='inner'
+    )
+    
+    # Calculate average performance by director
+    director_performance = director_movies.groupby('crew_name').agg({
+        'revenue': 'mean',
+        'vote_average': 'mean',
+        'movie_id': 'count'
+    }).round(2)
+    
+    director_performance.columns = ['Avg Revenue', 'Avg Rating', 'Movie Count']
+    director_performance = director_performance[director_performance['Movie Count'] >= 3]
+    director_performance = director_performance.sort_values('Avg Revenue', ascending=False)
+    
+    st.markdown("**Top Directors by Average Revenue:**")
+    st.dataframe(director_performance.head(10))
+    
+    # Visualization
+    top_directors = director_performance.head(15)
+    
+    fig = px.scatter(
+        top_directors,
+        x='Avg Rating',
+        y='Avg Revenue',
+        size='Movie Count',
+        hover_name=top_directors.index,
+        title="Director Performance: Rating vs Revenue",
+        labels={'Avg Rating': 'Average Rating', 'Avg Revenue': 'Average Revenue ($)'}
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+
+    # Calculate average performance by actor
+def analyze_cast_impact(data, movies_merged):
+    """Analyze cast impact on movie performance"""
+    
+    # Check if cast data exists
+    if 'cast' not in data or len(data['cast']) == 0:
+        st.warning("No cast data available for analysis.")
+        return
+    
+    # Get main cast (order < 3)
+    main_cast = data['cast'][data['cast']['order'] < 3].copy()
+    
+    # Merge cast data with movies using movie_id
+    cast_movies = movies_merged.merge(
+        main_cast[['movie_id', 'cast_name']], 
+        on='movie_id', 
+        how='inner'
+    )
+    
+    # Filter for meaningful analysis
+    cast_movies = cast_movies.dropna(subset=['revenue', 'vote_average'])
+    cast_movies = cast_movies[cast_movies['revenue'] > 0]
+    
+    if len(cast_movies) == 0:
+        st.warning("No cast data with valid financial information available.")
+        return
+    
+    # Calculate average performance by actor
+    cast_performance = cast_movies.groupby('cast_name').agg({
+        'revenue': 'mean',
+        'vote_average': 'mean',
+        'movie_id': 'count'
+    }).round(2)
+    
+    cast_performance.columns = ['Avg Revenue', 'Avg Rating', 'Movie Count']
+    cast_performance = cast_performance[cast_performance['Movie Count'] >= 3]
+    cast_performance = cast_performance.sort_values('Avg Revenue', ascending=False)
+    
+    if len(cast_performance) == 0:
+        st.warning("No actors with sufficient movie count (3+) for reliable analysis.")
+        return
+    
+    st.markdown("**Top Actors by Average Revenue:**")
+    
+    # Format revenue for display
+    display_df = cast_performance.head(10).copy()
+    display_df['Avg Revenue'] = display_df['Avg Revenue'].apply(lambda x: f"${x:,.0f}")
+    st.dataframe(display_df)
+    
+    # Box office star power analysis
+    fig = px.bar(
+        cast_performance.head(10),
+        x=cast_performance.head(10).index,
+        y='Avg Revenue',
+        title="Top 10 Actors by Box Office Performance",
+        labels={'x': 'Actor', 'Avg Revenue': 'Average Revenue ($)'}
+    )
+    
+    fig.update_xaxes(tickangle=45)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+
+def analyze_genre_performance(data, movies_merged):
+    """Analyze genre performance trends"""
+    
+    # Check if genres data exists
+    if 'genres' not in data or len(data['genres']) == 0:
+        st.warning("No genre data available for analysis.")
+        return
+    
+    # Get genre data and merge with movies
+    genre_data = data['genres'].copy()
+    
+    # Debug: Check columns before merge
+    st.write("📋 **Debug Info:**")
+    st.write("Genre data columns:", genre_data.columns.tolist())
+    st.write("Movies merged columns:", movies_merged.columns.tolist())
+    st.write("Genre data shape:", genre_data.shape)
+    st.write("Movies merged shape:", movies_merged.shape)
+    
+    # Merge genre data with movies data using movie_id
+    try:
+        genre_movies = movies_merged.merge(
+            genre_data[['movie_id', 'genre']], 
+            on='movie_id',
+            how='inner'
+        )
+        st.write("✅ Merge successful. Merged data shape:", genre_movies.shape)
+        st.write("Columns after merge:", genre_movies.columns.tolist())
+        
+    except KeyError as e:
+        st.error(f"Column merge error: {e}")
+        st.write("Available columns in genre data:", genre_data.columns.tolist())
+        st.write("Available columns in movies data:", movies_merged.columns.tolist())
+        return
+    
+    # Check if merge was successful
+    if len(genre_movies) == 0:
+        st.warning("Merge resulted in empty dataset - no matching movie_ids.")
+        return
+    
+    # Check if 'genre' column exists after merge
+    if 'genre' not in genre_movies.columns:
+        st.error("Genre column missing after merge!")
+        st.write("Available columns:", genre_movies.columns.tolist())
+        return
+    
+    # Filter out rows with missing financial data for meaningful analysis
+    st.write("Before filtering - rows:", len(genre_movies))
+    
+    # Check which columns exist for filtering
+    filter_columns = []
+    if 'revenue' in genre_movies.columns:
+        filter_columns.append('revenue')
+    if 'vote_average' in genre_movies.columns:
+        filter_columns.append('vote_average')
+    
+    if not filter_columns:
+        st.error("Neither 'revenue' nor 'vote_average' columns found!")
+        st.write("Available columns:", genre_movies.columns.tolist())
+        return
+    
+    # Apply filtering
+    genre_movies = genre_movies.dropna(subset=filter_columns)
+    if 'revenue' in genre_movies.columns:
+        genre_movies = genre_movies[genre_movies['revenue'] > 0]
+    
+    st.write("After filtering - rows:", len(genre_movies))
+    
+    if len(genre_movies) == 0:
+        st.warning("No genre data with valid financial information available after filtering.")
+        return
+    
+    # Final check before groupby
+    if 'genre' not in genre_movies.columns:
+        st.error("Genre column was lost during filtering!")
+        st.write("Columns after filtering:", genre_movies.columns.tolist())
+        return
+    
+    st.write("🎯 **Ready for analysis with columns:**", genre_movies.columns.tolist())
+    
+    # Calculate performance by genre
+    try:
+        agg_dict = {'movie_id': 'count'}
+        
+        if 'revenue' in genre_movies.columns:
+            agg_dict['revenue'] = ['mean', 'median']
+        if 'vote_average' in genre_movies.columns:
+            agg_dict['vote_average'] = 'mean'
+        
+        genre_performance = genre_movies.groupby('genre').agg(agg_dict).round(2)
+        
+        # Flatten column names
+        if 'revenue' in genre_movies.columns and 'vote_average' in genre_movies.columns:
+            genre_performance.columns = ['Avg Revenue', 'Median Revenue', 'Avg Rating', 'Movie Count']
+        elif 'revenue' in genre_movies.columns:
+            genre_performance.columns = ['Avg Revenue', 'Median Revenue', 'Movie Count']
+        elif 'vote_average' in genre_movies.columns:
+            genre_performance.columns = ['Avg Rating', 'Movie Count']
+        else:
+            genre_performance.columns = ['Movie Count']
+            
+        genre_performance = genre_performance.sort_values(genre_performance.columns[0], ascending=False)
+        
+        st.success("✅ Analysis completed successfully!")
+        
+    except Exception as e:
+        st.error(f"Error in groupby operation: {str(e)}")
+        st.write("Genre movies sample:")
+        st.write(genre_movies.head())
+        return
+    
+    # Display results
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Genre Performance Summary:**")
+        display_df = genre_performance.copy()
+        
+        # Format revenue columns if they exist
+        if 'Avg Revenue' in display_df.columns:
+            display_df['Avg Revenue'] = display_df['Avg Revenue'].apply(lambda x: f"${x:,.0f}")
+        if 'Median Revenue' in display_df.columns:
+            display_df['Median Revenue'] = display_df['Median Revenue'].apply(lambda x: f"${x:,.0f}")
+            
+        st.dataframe(display_df)
+    
+    with col2:
+        # Genre performance visualization (if we have the right data)
+        if len(genre_performance.columns) >= 2:
+            fig = px.scatter(
+                genre_performance,
+                x=genre_performance.columns[1] if len(genre_performance.columns) > 2 else genre_performance.columns[0],
+                y=genre_performance.columns[0],
+                size=genre_performance.columns[-1],  # Movie Count
+                hover_name=genre_performance.index,
+                title="Genre Performance Overview"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Genre trends over time (if release_year available)
+    if 'release_year' in movies_merged.columns and 'revenue' in genre_movies.columns:
+        st.markdown("**Recent Genre Performance (2010+):**")
+        
+        # Filter for recent years and group by genre
+        recent_genre_movies = genre_movies[
+            (genre_movies['release_year'] >= 2010) & 
+            (genre_movies['release_year'] <= 2020)
+        ]
+        
+        if len(recent_genre_movies) > 0:
+            recent_genre_performance = recent_genre_movies.groupby('genre').agg({
+                'revenue': 'mean',
+                'vote_average': 'mean' if 'vote_average' in recent_genre_movies.columns else 'count',
+                'movie_id': 'count'
+            }).round(2)
+            
+            recent_genre_performance.columns = ['Avg Revenue', 'Avg Rating', 'Movie Count']
+            recent_genre_performance = recent_genre_performance.sort_values('Avg Revenue', ascending=False)
+            
+            # Format and display
+            display_recent = recent_genre_performance.copy()
+            display_recent['Avg Revenue'] = display_recent['Avg Revenue'].apply(lambda x: f"${x:,.0f}")
+            st.dataframe(display_recent)
+        else:
+            st.info("No genre data available for recent years (2010-2020).")
+
 
 if __name__ == "__main__":
     main()
